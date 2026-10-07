@@ -1,0 +1,32 @@
+name: Fold fragments via a PR
+# Alternative to a bypassing bot: fold on a branch, open a PR with the workflow token, and enqueue it.
+# Question under test: does a PR / enqueue made with GITHUB_TOKEN get its required `gate` run?
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  fold:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fold on a branch and open a PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          shopt -s nullglob
+          frags=(fragments/*.md)
+          if [ ${#frags[@]} -eq 0 ]; then echo "FOLD nothing to fold"; exit 0; fi
+          for f in "${frags[@]}"; do cat "$f" >> LEDGER.md; git rm -q "$f"; done
+          git config user.name "fold-bot"
+          git config user.email "fold-bot@users.noreply.github.com"
+          git checkout -q -b "fold-$RUN"
+          git add LEDGER.md
+          git commit -q -m "fold ${#frags[@]} fragment(s) into LEDGER.md"
+          git push -q origin "fold-$RUN"
+          url=$(gh pr create --repo "$REPO" --base main --head "fold-$RUN" --title "fold-$RUN" --body "fold bot PR (GITHUB_TOKEN)")
+          echo "FOLD opened $url"
