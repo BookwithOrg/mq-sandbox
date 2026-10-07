@@ -1,0 +1,28 @@
+name: Fold fragments
+# Stand-in for folding doc fragments into the shared ledger, moved to AFTER the merge:
+# one writer on main, so queued PRs never touch LEDGER.md themselves.
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+concurrency:
+  group: fold-main
+  cancel-in-progress: false
+jobs:
+  fold:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fold
+        run: |
+          set -eu
+          shopt -s nullglob
+          frags=(fragments/*.md)
+          if [ ${#frags[@]} -eq 0 ]; then echo "FOLD nothing to fold"; exit 0; fi
+          for f in "${frags[@]}"; do cat "$f" >> LEDGER.md; git rm -q "$f"; done
+          git config user.name "fold-bot"
+          git config user.email "fold-bot@users.noreply.github.com"
+          git add LEDGER.md
+          git commit -q -m "fold ${#frags[@]} fragment(s) into LEDGER.md"
+          if git push origin HEAD:main; then echo "FOLD pushed ${#frags[@]}"; else echo "FOLD push REFUSED"; exit 1; fi

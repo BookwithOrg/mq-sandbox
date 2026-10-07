@@ -1,0 +1,36 @@
+name: Gate
+# Stand-in for a required CI check. Runs on PRs and on merge-queue groups.
+on:
+  pull_request:
+  merge_group:
+permissions:
+  contents: read
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 20
+      - name: Event facts
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MG_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          MG_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        run: |
+          echo "FACTS event=$EVENT pr=$PR_NUMBER mg_head_ref=$MG_HEAD_REF mg_base=$MG_BASE_SHA mg_head=$MG_HEAD_SHA sha=$GITHUB_SHA ref=$GITHUB_REF"
+          echo "PAYLOAD_KEYS $(jq -c 'keys' "$GITHUB_EVENT_PATH")"
+          jq -c '.merge_group // {} | del(.head_commit.tree_id)' "$GITHUB_EVENT_PATH"
+          git log --oneline -8
+          cat LEDGER.md
+      - name: Simulated test time
+        run: sleep 45
+      - name: Red switch
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ -f FAIL ]; then echo "RED: FAIL file present"; exit 1; fi
+          if [ "$EVENT" = "merge_group" ] && [ -f FAIL_IN_QUEUE ]; then echo "RED: FAIL_IN_QUEUE"; exit 1; fi
+          echo "GREEN"
