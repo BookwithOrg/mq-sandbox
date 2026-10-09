@@ -23,6 +23,7 @@ jobs:
           echo "FACTS event=$EVENT pr=$PR_NUMBER mg_head_ref=$MG_HEAD_REF mg_base=$MG_BASE_SHA mg_head=$MG_HEAD_SHA sha=$GITHUB_SHA ref=$GITHUB_REF"
           echo "PAYLOAD_KEYS $(jq -c 'keys' "$GITHUB_EVENT_PATH")"
           jq -c '.merge_group // {} | del(.head_commit.tree_id)' "$GITHUB_EVENT_PATH"
+          echo "FULL_PAYLOAD_B64 $(base64 -w0 "$GITHUB_EVENT_PATH")"
           git log --oneline -8
           cat LEDGER.md
       - name: Simulated test time
