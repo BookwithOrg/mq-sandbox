@@ -1,0 +1,43 @@
+name: Queue dropped notice
+
+# native-merge-queue SPEC AC4.7. When GitHub takes a PR out of the merge queue without merging it (a conflict with
+# the PRs ahead, a red queue run, or a person), say so on the PR to Ori and label it `queue-dropped`, so a session's
+# start-up sweep lists it (AC4.6). The words are the queue command's own `--status` answer (reason, branch, next
+# step); scripts/queue-dropped-notice.py only posts them. When the PR is queued again, the label comes off.
+# Dark until a branch has a queue: GitHub sends no enqueued/dequeued event without one.
+#
+# pull_request_target, not pull_request: GitHub runs no `pull_request` workflow for a PR with a merge conflict — the
+# commonest drop. SAFE because it NEVER checks out the PR: actions/checkout with no `ref` gives the BASE branch's own
+# scripts, and every value from the event reaches the script through `env`, never inline in `run:`.
+on:
+  pull_request_target:
+    types: [dequeued, enqueued]
+
+permissions: {}
+
+# One run per PR at a time; each run re-reads the PR, so the newest event's run is the one that must win.
+concurrency:
+  group: queue-dropped-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  notice:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 10
+    permissions:
+      contents: read # the base branch's scripts, and the branch's rules (is there a queue?)
+      pull-requests: write # the comment and the label
+      issues: write # creating the label the first time
+      checks: read # queue-pr.py --status reads the PR's checks
+      statuses: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts
+      - name: Tell Ori when a PR left the queue without merging
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          ACTION: ${{ github.event.action }}
+        run: python3 scripts/queue-dropped-notice.py
