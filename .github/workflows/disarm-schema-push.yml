@@ -4,29 +4,37 @@ name: Disarm a schema push
 # changes the database schema: its prod-schema probe must answer for the moment the PR is queued (PR #755, a 6.5 h
 # outage). But GitHub keeps an arm through a writer's push (sandbox rehearsal d2), so a PR armed BEFORE a push brought a
 # schema change would be queued unprobed the moment an approval lands — Ori's OWNER OVERRIDE runs nothing after it.
-# This takes that arm off. It cannot undo a legitimate arm: on a PR whose diff touches the schema, no arm is legitimate.
+# This takes that arm off. The paths are the probe's own rule (`schema_files_touched` in scripts/_prod_schema_probe.py:
+# everything under shared/schema/ except markdown), so the workflow fires exactly for the PRs queue-pr refuses to arm —
+# it never takes off an arm queue-pr would have made. test_disarm_schema_push.py pins both.
 #
 # pull_request_target, not pull_request: GitHub runs the DEFAULT branch's copy of this file with a write token, and the
 # job never checks out the PR. Event values reach the step through `env`, never inline in `run:`.
+#
+# auto_merge_enabled too (QA charter G-1c): a schema PR armed by anyone else — GitHub's own "Merge when ready" or
+# "Enable auto-merge" button, in the web page or GitHub Mobile — is taken off at once, with no push needed.
 on:
   pull_request_target:
-    types: [synchronize]
+    types: [synchronize, auto_merge_enabled]
     paths:
       - 'shared/schema/**'
-      - 'migrations/**'
-      - 'server/migrations/**'
-      - 'drizzle.config.ts'
+      - '!shared/schema/**/*.md'
 
 permissions: {}
+
+# One run per PR at a time; a newer push's run waits for the older one (each re-reads the PR).
+concurrency:
+  group: disarm-schema-push-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
 
 jobs:
   disarm:
     if: github.event.pull_request.auto_merge != null
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 5
     permissions:
       pull-requests: write # take auto-merge off, and the comment
-      contents: write # GitHub asks for it to change a PR's auto-merge (measured on mq-sandbox, merge-queue-simplify rehearsal)
+      contents: write # measured on mq-sandbox: with pull-requests: write alone GitHub refused (rehearsal A7)
     steps:
       - name: Take the arm off and say why
         env:
@@ -36,5 +44,42 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          gh pr merge "$PR" -R "$REPO" --disable-auto
-          gh pr comment "$PR" -R "$REPO" --body "Auto-merge taken off at \`${HEAD_SHA:0:9}\`: this PR now changes the database schema, and a schema PR is never armed — prod must already have its columns at the moment it is queued (PR #755). After the prod \`ALTER\` (/neon-migrate), \`python3 scripts/queue-pr.py --pr $PR\` queues it right after its schema check. (merge-queue-simplify AC-A7)"
+          # Read the PR's live state first: a run queued behind another may find the arm already off (CTO r2 check).
+          if [ -z "$(gh pr view "$PR" -R "$REPO" --json autoMergeRequest --jq '.autoMergeRequest // empty')" ]; then
+            echo "#$PR is not armed any more — nothing to take off."; exit 0
+          fi
+          for try in 1 2 3; do
+            if gh pr merge "$PR" -R "$REPO" --disable-auto; then break; fi
+            if [ "$try" = 3 ]; then echo "could not take the arm off #$PR after 3 tries" >&2; exit 1; fi
+            sleep 20
+          done
+          gh pr comment "$PR" -R "$REPO" --body "Auto-merge taken off at \`${HEAD_SHA:0:9}\`: this PR changes the database schema, and a schema PR is never armed — prod must already have its columns at the moment it is queued (PR #755). After the prod \`ALTER\` (/neon-migrate), \`python3 scripts/queue-pr.py --pr $PR\` queues it right after its schema check. (merge-queue-simplify AC-A7)"
+
+  # A failed disarm leaves an armed schema PR that GitHub may queue unprobed on the next approval: say so loudly,
+  # the way queue-dropped.yml does for its notice.
+  alert:
+    needs: disarm
+    # not only 'failure': a run cancelled or timed out also leaves the arm on (QA charter F-9; queue-dropped.yml's rule)
+    if: always() && needs.disarm.result != 'success' && needs.disarm.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4 # the local action below lives in the repo
+      - name: Open or comment on the schema-disarm-failed issue
+        uses: ./.github/actions/alert-on-scheduled-failure
+        with:
+          label: schema-disarm-failed
+          description: A push brought a schema change to an armed PR and its auto-merge could not be taken off
+          title: 'Schema PR still armed: #${{ github.event.pull_request.number }}'
+          body: >-
+            @Oriel00 — PR #${{ github.event.pull_request.number }} now changes the database schema but is still armed:
+            taking its auto-merge off failed. GitHub may queue it without the prod-schema check on its next approval.
+            Agents: `python3 scripts/queue-pr.py --disarm ${{ github.event.pull_request.number }}` (or the PR page's
+            "Disable auto-merge" button), then report here. Runbook: docs/architecture/ci-cd.md §8, the
+            schema-disarm-failed row.
+          again: >-
+            Failed again — @Oriel00: PR #${{ github.event.pull_request.number }} changes the database schema and is
+            still armed. `python3 scripts/queue-pr.py --disarm ${{ github.event.pull_request.number }}`.
