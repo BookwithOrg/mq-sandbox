@@ -1,0 +1,58 @@
+name: QA digest
+
+# owner-chat-approve SPEC AC-10 / AC-11. Every 3 days, ONE comment on the `qa-digest` issue listing each PR merged into
+# main since the previous digest and who approved it: a QA walk, Ori in chat (with what the walk did not test), Ori's
+# GitHub override, or an alarm. scripts/qa-digest.py asks the merged-PR audit (scripts/check-merged-pr-qa.py audit()) for
+# every PR, so the digest and the per-merge check can never disagree about what a valid approval is. Read-only towards
+# PRs; it writes only the digest issue. A run that fails opens or updates a `qa-digest-failed` issue, so a silent digest
+# is never mistaken for a quiet week.
+on:
+  schedule:
+    - cron: "17 6 */3 * *" # 06:17 UTC on days 1, 4, 7 … of each month (a 31st and a 1st sit 1 day apart — fine)
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: qa-digest
+  cancel-in-progress: false
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read # the scripts, and the branch's rules the audit reads
+      issues: write # the digest issue and its comment
+      pull-requests: read # the merged PRs, their files and reviews
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts
+      - name: Post the QA digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE: ${{ github.event.repository.default_branch }}
+        run: python3 scripts/qa-digest.py --repo "$REPO" --base "$BASE"
+
+  alert:
+    needs: digest
+    if: always() && needs.digest.result != 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4 # the local action below lives in the repo
+      - name: Open or comment on the qa-digest-failed issue
+        uses: ./.github/actions/alert-on-scheduled-failure
+        with:
+          label: qa-digest-failed
+          description: The 3-day QA digest could not be made or posted
+          title: QA digest could not be posted — see the run
+          body: >-
+            @Oriel00 — the 3-day QA digest ended `${{ needs.digest.result }}`. Nothing is wrong with any merge because
+            of this; the digest itself failed. Agents: open the run's log, fix scripts/qa-digest.py or its workflow,
+            then re-run it by hand (Actions → QA digest → Run workflow). Runbook: docs/architecture/ci-cd.md §8.
