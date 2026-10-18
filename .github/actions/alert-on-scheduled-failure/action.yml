@@ -1,0 +1,73 @@
+# alert-on-scheduled-failure — open (or comment on) the issue that is a scheduled net's ONLY
+# surfacing. Defined once; the same block used to be hand-copied into every alerting workflow
+# (TD-ROT-ALERT-BLOCK-SEPTUPLICATED lists which still carry a copy).
+#
+# Usage — preferably from a SEPARATE job that reads the net's result, so a runner lost mid-job, a timeout
+# (CANCELLED) and a skip reach it too; ci.yml's `quality-alert` is the model (#4792):
+#   alert:
+#     needs: <net job>
+#     if: always() && github.event_name == 'schedule' && needs.<net job>.result != 'success'
+#     runs-on: <same runner as the net>   # required: a job without it makes GitHub refuse the whole file
+#     permissions:
+#       contents: read
+#       issues: write                      # without it the `gh issue` calls fail with 403
+#     steps:
+#       - uses: actions/checkout@v4
+#       - uses: ./.github/actions/alert-on-scheduled-failure
+#         with: …
+# The older shape — the LAST step of the net's own job, `if: failure() && github.event_name == 'schedule'` —
+# misses a timeout and a skip, and most likely a lost runner too (not reproduced). Keep the net's own trigger
+# in the event test (most nets alert on `schedule`; one that also alerts on `push` says so). Inputs:
+#     with:
+#       label: ci-asset-rot          # must be one session-start-guard-check.sh surfaces
+#       description: what the label means (shown on the label)
+#       title: issue title
+#       body: what fired and which docs/architecture/ci-cd.md §8 row to read
+#       again: what a repeat failure's comment says (optional; default "Failed again")
+# The run URL is appended to the body. One open issue per label: a repeat failure comments on
+# it instead of opening a second, so "how many nights has this been red" is one thread. A net
+# whose issue collects alarms about DIFFERENT things (one per PR, one per push) names the thing in
+# `again`: the comment is the only place a later alarm is told, and this step already has the
+# issue in hand — a second lookup in a later step could fail, or not see a just-opened issue yet.
+# Every value reaches the shell through env, never inline in `run:`: `again` and `body` may carry event values
+# (a base ref, an actor, an event reason), and through env they stay text.
+name: Alert on scheduled failure
+description: Open or comment on the issue that surfaces a failed scheduled safety net
+inputs:
+  label:
+    description: The issue label (session-start-guard-check.sh must know it)
+    required: true
+  description:
+    description: The label's description
+    required: true
+  title:
+    description: Issue title when a new issue is opened
+    required: true
+  body:
+    description: Issue body (the run URL is appended)
+    required: true
+  again:
+    description: What a repeat failure's comment says, before the run URL
+    required: false
+    default: Failed again
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        LABEL: ${{ inputs.label }}
+        LABEL_DESC: ${{ inputs.description }}
+        TITLE: ${{ inputs.title }}
+        BODY: ${{ inputs.body }}
+        AGAIN: ${{ inputs.again }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        set -euo pipefail
+        gh label create "$LABEL" --color B60205 --description "$LABEL_DESC" --force || true
+        existing="$(gh issue list --label "$LABEL" --state open --json number --jq '.[0].number' || true)"
+        if [ -n "$existing" ]; then
+          gh issue comment "$existing" --body "$AGAIN — $RUN_URL"
+        else
+          gh issue create --title "$TITLE" --label "$LABEL" --body "$(printf '%s\n\n%s' "$BODY" "$RUN_URL")"
+        fi
