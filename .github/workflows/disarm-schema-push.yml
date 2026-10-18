@@ -34,6 +34,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       pull-requests: write # take auto-merge off, and the comment
+      contents: write # measured on mq-sandbox: with pull-requests: write alone GitHub refused (rehearsal A7)
     steps:
       - name: Take the arm off and say why
         env:
