@@ -1,0 +1,39 @@
+name: Disarm a schema push
+
+# merge-queue-simplify SPEC AC-A7 (fresh CTO review of #5236, BLOCKER). `scripts/queue-pr.py` never ARMS a PR that
+# changes the database schema: its prod-schema probe must answer for the moment the PR is queued (PR #755, a 6.5 h
+# outage). But GitHub keeps an arm through a writer's push (sandbox rehearsal d2), so a PR armed BEFORE a push brought a
+# schema change would be queued unprobed the moment an approval lands — Ori's OWNER OVERRIDE runs nothing after it.
+# This takes that arm off. It cannot undo a legitimate arm: on a PR whose diff touches the schema, no arm is legitimate.
+#
+# pull_request_target, not pull_request: GitHub runs the DEFAULT branch's copy of this file with a write token, and the
+# job never checks out the PR. Event values reach the step through `env`, never inline in `run:`.
+on:
+  pull_request_target:
+    types: [synchronize]
+    paths:
+      - 'shared/schema/**'
+      - 'migrations/**'
+      - 'server/migrations/**'
+      - 'drizzle.config.ts'
+
+permissions: {}
+
+jobs:
+  disarm:
+    if: github.event.pull_request.auto_merge != null
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write # take auto-merge off, and the comment
+    steps:
+      - name: Take the arm off and say why
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          gh pr merge "$PR" -R "$REPO" --disable-auto
+          gh pr comment "$PR" -R "$REPO" --body "Auto-merge taken off at \`${HEAD_SHA:0:9}\`: this PR now changes the database schema, and a schema PR is never armed — prod must already have its columns at the moment it is queued (PR #755). After the prod \`ALTER\` (/neon-migrate), \`python3 scripts/queue-pr.py --pr $PR\` queues it right after its schema check. (merge-queue-simplify AC-A7)"
